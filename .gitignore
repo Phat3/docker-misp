@@ -2,3 +2,5 @@
 /files/
 /ssl/
 /server-configs/
+.gnupg
+.env

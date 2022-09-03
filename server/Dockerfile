@@ -3,7 +3,9 @@ FROM composer:2.1.14 as composer-build
     WORKDIR /tmp
     ADD https://raw.githubusercontent.com/MISP/MISP/${MISP_TAG}/app/composer.json /tmp
     RUN composer install --ignore-platform-reqs && \
-     composer require jakub-onderka/openid-connect-php:1.0.0-rc1 --ignore-platform-reqs
+     composer require jakub-onderka/openid-connect-php:1.0.0-rc1 --ignore-platform-reqs && \
+     composer require --with-all-dependencies supervisorphp/supervisor:^4.0 \
+      guzzlehttp/guzzle php-http/message lstrojny/fxmlrpc --ignore-platform-reqs
 
 FROM debian:bullseye-slim as php-build
     RUN apt-get update; apt-get install -y --no-install-recommends \
@@ -84,6 +86,7 @@ FROM debian:bullseye-slim as python-build
 FROM debian:bullseye-slim
 ENV DEBIAN_FRONTEND noninteractive
 ARG MISP_TAG
+ARG MISP_COMMIT
 ARG PHP_VER
 
 # OS Packages
@@ -122,11 +125,13 @@ ARG PHP_VER
         libbrotli1 \
         # Unsure we need these
         zip unzip \
+        patch \
         && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 # MISP code
     # Download MISP using git in the /var/www/ directory.
-    RUN git clone --branch ${MISP_TAG} --depth 1 https://github.com/MISP/MISP.git /var/www/MISP; \
+    RUN git clone --branch ${MISP_TAG} --depth 1 https://github.com/MISP/MISP.git /var/www/MISP
+    RUN if [ ! -z ${MISP_COMMIT} ]; then cd /var/www/MISP && git checkout ${MISP_COMMIT}; fi; \
         # We build the MISP modules outside, so we don't need to grab those submodules
         cd /var/www/MISP/app || exit; git submodule update --init --recursive .;
 
@@ -148,12 +153,8 @@ ARG PHP_VER
 
     RUN for dir in /etc/php/*; do echo "extension=ssdeep.so" > "$dir/mods-available/ssdeep.ini"; done \
             ;phpenmod redis \
-    # Enable CakeResque with php-gnupgp
-        ;phpenmod gnupg \
     # Enable ssdeep we build earlier
-        ;phpenmod ssdeep \
-    # To use the scheduler worker for scheduled tasks, do the following:
-        ;cp -fa /var/www/MISP/INSTALL/setup/config.php /var/www/MISP/app/Plugin/CakeResque/Config/config.php
+        ;phpenmod ssdeep
 
 # nginx
     RUN rm /etc/nginx/sites-enabled/*; mkdir /run/php /etc/nginx/certs
@@ -168,12 +169,16 @@ ARG PHP_VER
 # Make a copy of the configurations, so we can sync from it
     RUN cp -R /var/www/MISP/app/Config /var/www/MISP/app/Config.dist
 
+# This is a temporary patch - remove this if the build fails
+    COPY patches/attribute.patch attribute.patch
+    RUN patch /var/www/MISP/app/Model/Attribute.php < attribute.patch
+
 # Entrypoints
-    COPY files/etc/supervisor/supervisor.conf /etc/supervisor/conf.d/supervisord.conf
+    COPY files/etc/supervisor/supervisor.conf /etc/supervisor/conf.d/10-supervisor.conf
+    COPY files/etc/supervisor/workers.conf /etc/supervisor/conf.d/50-workers.conf
     COPY files/entrypoint_fpm.sh /
     COPY files/entrypoint_nginx.sh /
     COPY files/entrypoint_cron.sh /
-    COPY files/entrypoint_workers.sh /
     COPY files/entrypoint.sh /
     ENTRYPOINT [ "/entrypoint.sh" ]
 
